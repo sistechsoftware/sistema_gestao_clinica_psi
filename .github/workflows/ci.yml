@@ -49,6 +49,11 @@ jobs:
       - name: Prettier (check)
         run: npx prettier --check "**/*.{ts,tsx,mjs,json,md}" --ignore-path .gitignore
 
+      # Os tsconfigs dos workspaces resolvem @psa/shared/* pelos types do dist,
+      # então o pacote precisa estar compilado antes do typecheck.
+      - name: Build shared package (types for workspace typecheck)
+        run: npm run build -w @psa/shared
+
       - name: Typecheck (all workspaces)
         run: npm run typecheck
 
@@ -109,18 +114,21 @@ jobs:
 
       # Falha se existir mudança no schema sem migration correspondente —
       # impede drift entre schema.prisma e migrations/ (doc 04 §5).
+      # Nota: diff vazio emite só o comentário "-- This is an empty migration.",
+      # então consideramos drift apenas quando há linha de DDL de verdade.
       - name: Detect missing migration (schema drift)
         run: |
           npx prisma migrate diff \
             --from-migrations prisma/migrations \
             --to-schema-datamodel prisma/schema.prisma \
             --shadow-database-url "$DIRECT_URL" \
-            --script --exit-code > /tmp/drift.sql || true
-          if [ -s /tmp/drift.sql ]; then
+            --script > /tmp/drift.sql || { echo "::error::migrate diff falhou"; cat /tmp/drift.sql; exit 1; }
+          if grep -qEv '^\s*(--.*)?$' /tmp/drift.sql; then
             echo "::error::schema.prisma divergiu de prisma/migrations — rode 'npm run db:migrate' e commite a nova migration."
             cat /tmp/drift.sql
             exit 1
           fi
+          echo "sem drift: migrations em sync com o schema"
 
       - name: Apply migrations (shadow-free, against service)
         run: npx prisma migrate deploy
