@@ -1,0 +1,181 @@
+# =============================================================================
+# CI — Pull Requests e pushes de feature (docs/03 §3: checks obrigatórios)
+#
+#Jobs:  lint+typecheck → build → validate+migrate-check → tests (unit;
+#       integração com Postgres efêmero) → test:tenant-isolation (R3)
+#
+# Integração roda contra Postgres 17 real (mesma versão do docker-compose.yml)
+# em banco efêmero criado por execução (tests/helpers/db.ts).
+# =============================================================================
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**', '.gitignore', 'LICENSE']
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Segredos de teste — nunca use valores de produção aqui (doc 03 §2).
+  JWT_SECRET: ci-secret-0123456789abcdef0123456789abcdef
+  AES_MASTER_KEY: Y2ktbWFzdGVyLWtleS0zMi1ieXRlcy0wMTIzNDU2Nzg5YWJjZGVm
+  APP_ENV: local
+  NODE_ENV: test
+
+jobs:
+  quality:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Prettier (config já existe); ESLint entra quando configurado (Fase 2+)
+      # .prisma fica de fora — é verificado por `prisma format --check` no job prisma
+      - name: Prettier (check)
+        run: npx prettier --check "**/*.{ts,tsx,mjs,json,md}" --ignore-path .gitignore
+
+      - name: Typecheck (all workspaces)
+        run: npm run typecheck
+
+  build:
+    name: Build (shared + api)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Assert build artifacts
+        run: |
+          test -f packages/shared/dist/index.js
+          test -f apps/api/dist/server.js
+          echo "build artifacts OK"
+
+  prisma:
+    name: Prisma validate & migrate-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: psa
+          POSTGRES_PASSWORD: psa
+          POSTGRES_DB: psa_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U psa -d psa_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DIRECT_URL: postgresql://psa:psa@localhost:5432/psa_ci?schema=public
+      DATABASE_URL: postgresql://psa:psa@localhost:5432/psa_ci?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Install postgresql-client (psql)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Prisma validate
+        run: npx prisma validate
+
+      - name: Prisma format (check)
+        run: npx prisma format --check
+
+      # Falha se existir mudança no schema sem migration correspondente —
+      # impede drift entre schema.prisma e migrations/ (doc 04 §5).
+      - name: Detect missing migration (schema drift)
+        run: |
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$DIRECT_URL" \
+            --script --exit-code > /tmp/drift.sql || true
+          if [ -s /tmp/drift.sql ]; then
+            echo "::error::schema.prisma divergiu de prisma/migrations — rode 'npm run db:migrate' e commite a nova migration."
+            cat /tmp/drift.sql
+            exit 1
+          fi
+
+      - name: Apply migrations (shadow-free, against service)
+        run: npx prisma migrate deploy
+
+      - name: Smoke query
+        run: |
+          PGPASSWORD=psa psql -h localhost -U psa -d psa_ci -c '\dt' | tail -5
+          TABLES=$(PGPASSWORD=psa psql -h localhost -U psa -d psa_ci -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          echo "tables in public: $TABLES"
+          [ "$TABLES" -ge 37 ] || { echo "::error::esperadas >= 37 tabelas"; exit 1; }
+
+  tests:
+    name: Tests (unit + integration + tenant-isolation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: psa
+          POSTGRES_PASSWORD: psa
+          POSTGRES_DB: psa_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U psa -d psa_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://psa:psa@localhost:5432/psa_test?schema=public
+      DATABASE_URL: postgresql://psa:psa@localhost:5432/psa_test?schema=public
+      DIRECT_URL: postgresql://psa:psa@localhost:5432/psa_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Build shared (vitest helpers import from dist)
+        run: npm run build -w @psa/shared
+
+      - name: Run tests (unit + integration)
+        run: npm run test -w @psa/api -- --reporter=dot
+
+      - name: Run shared package tests
+        run: npm run test -w @psa/shared
+
+      - name: Upload vitest results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-results
+          path: |
+            apps/api/test-results/**
+            apps/api/coverage/**
+          if-no-files-found: ignore
