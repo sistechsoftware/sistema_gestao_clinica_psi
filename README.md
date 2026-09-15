@@ -25,8 +25,8 @@ Seed do tenant demo: `admin@demo.local` / `TroqueEstaSenha!2026` (troque em qual
 | `npm run dev`                                                                                             | API em watch mode (tsx)                                                                  |
 | `npm run build`                                                                                           | build shared + api                                                                       |
 | `npm run typecheck`                                                                                       | tsc --noEmit em todos os workspaces                                                      |
-| `npm test`                                                                                                | unit + integração (integração exige `TEST_DATABASE_URL`/`DATABASE_URL`; sem banco, pula) || `npm run db:up` / `db:down` | sobe/para o Postgres local (Docker Compose; `PSA_PG_PORT` troca a porta) |
-| `npm run db:generate` / `db:migrate` / `db:deploy` / `db:seed` / `db:reset` / `db:snapshot` / `db:studio` | ciclo de banco (reset destrutivo **somente** `APP_ENV=local`) |
+| `npm test`                                                                                                | unit + integração (integração exige `TEST_DATABASE_URL`/`DATABASE_URL`; sem banco, pula) |     | `npm run db:up` / `db:down` | sobe/para o Postgres local (Docker Compose; `PSA_PG_PORT` troca a porta) |
+| `npm run db:generate` / `db:migrate` / `db:deploy` / `db:seed` / `db:reset` / `db:snapshot` / `db:studio` | ciclo de banco (reset destrutivo **somente** `APP_ENV=local`)                            |
 
 ## CI (GitHub Actions) e Deploy
 
@@ -50,8 +50,8 @@ scripts/           db reset/snapshot com guardas de ambiente
 | [01 — Análise técnica e riscos](docs/01-analise-tecnica-e-riscos.md) | Etapas 1–2: análise da proposta, riscos (pooling serverless, fila, tenant enforcement, LGPD, PWA/iOS, WhatsApp oficial, dinheiro/tempo, recorrência, anti double-booking, Super Admin) |
 | [02 — Arquitetura de aplicação](docs/02-arquitetura-aplicacao.md)    | Etapas 3–4, 9: decisão Fastify vs NestJS, camadas, estrutura de pastas (monorepo)                                                                                                      |
 | [03 — Infra, ambientes e CI/CD](docs/03-infra-ambientes-cicd.md)     | Etapas 5–6: GitHub/Vercel/Cloudflare/PostgreSQL/R2, ambientes local→production, pipeline, backup                                                                                       |
-| [04 — ERD e modelo de dados](docs/04-erd-modelo-de-dados.md)         | Etapas 7–8: entidades, relacionamentos, migrations planejadas, seed                                                                                                                    || [05 — Testes e roadmap](docs/05-testes-roadmap.md) | Estratégia de testes (unit/integração/E2E + isolamento multi-tenant) e fases 0–10 |
-| [06 — CI e deploy](docs/06-ci-deploy.md) | Pipeline de CI, branch protection, convenções Vercel e segredos |
+| [04 — ERD e modelo de dados](docs/04-erd-modelo-de-dados.md)         | Etapas 7–8: entidades, relacionamentos, migrations planejadas, seed                                                                                                                    |     | [05 — Testes e roadmap](docs/05-testes-roadmap.md) | Estratégia de testes (unit/integração/E2E + isolamento multi-tenant) e fases 0–10 |
+| [06 — CI e deploy](docs/06-ci-deploy.md)                             | Pipeline de CI, branch protection, convenções Vercel e segredos                                                                                                                        |
 
 Fonte de verdade do modelo: [`prisma/schema.prisma`](prisma/schema.prisma).
 

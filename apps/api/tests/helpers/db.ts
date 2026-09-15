@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
+import { connect } from 'node:net';
 import { spawnSync } from 'node:child_process';
 
 // ============================================================================
@@ -11,6 +12,30 @@ import { spawnSync } from 'node:child_process';
 
 export function hasDatabase(): boolean {
   return Boolean(process.env.DATABASE_URL || process.env.TEST_DATABASE_URL);
+}
+
+/**
+ * Resolve a URL do Postgres de teste de forma determinística: retorna a URL
+ * somente se definida E alcançável (probe TCP). Evita o falso-positivo em que
+ * o PrismaClient injeta o .env local (Docker desligado) em process.env depois
+ * dos guards estáticos, fazendo a suíte crashar em vez de pular.
+ */
+export async function resolveTestDatabaseUrl(): Promise<string | null> {
+  const url = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+  if (!url) return null;
+  const u = new URL(url);
+  const reachable = await new Promise<boolean>((resolve) => {
+    const socket = connect({ host: u.hostname, port: Number(u.port || 5432) });
+    const done = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(1500);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+  return reachable ? url : null;
 }
 
 export function requireDb(): void {

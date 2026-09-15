@@ -2,9 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { buildApp } from '../src/server.js';
+import { resolveTestDatabaseUrl } from './helpers/db.js';
 import type { FastifyInstance } from 'fastify';
 
-const hasDb = Boolean(process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL);
+// Guard de skip resolvido de forma assíncrona (probe TCP): evita crash quando
+// o .env local injeta um DATABASE_URL de um Postgres desligado.
+const hasDb = await resolveTestDatabaseUrl();
 
 describe.skipIf(!hasDb)('auth flow (integração)', () => {
   let app: FastifyInstance;

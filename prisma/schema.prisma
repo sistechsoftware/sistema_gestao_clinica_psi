@@ -152,7 +152,7 @@ model Tenant {
   deletedAt DateTime? @map("deleted_at")
 
   users           TenantUser[]
-  activeSessions  Session[]    @relation("SessionActiveTenant")
+  activeSessions  Session[]           @relation("SessionActiveTenant")
   patients        Patient[]
   appointments    Appointment[]
   series          AppointmentSeries[]

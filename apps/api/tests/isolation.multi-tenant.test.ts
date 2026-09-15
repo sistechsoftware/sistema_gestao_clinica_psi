@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { buildApp } from '../src/server.js';
 import { createScopedPrisma } from '../src/infrastructure/database/tenant-scope.js';
+import { resolveTestDatabaseUrl } from './helpers/db.js';
 import type { FastifyInstance } from 'fastify';
 
 // ============================================================================
@@ -12,7 +13,8 @@ import type { FastifyInstance } from 'fastify';
 // a suíte é pulada (unit tests continuam rodando).
 // ============================================================================
 
-const hasDb = Boolean(process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL);
+// Guard de skip assíncrono (probe TCP) — ver helpers/db.ts.
+const hasDb = await resolveTestDatabaseUrl();
 
 interface TenantSetup {
   email: string;
