@@ -1,0 +1,41 @@
+{
+  "name": "psa-saas",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Plataforma SaaS multi-tenant para gestão profissional de psicanalistas",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.19 <25"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @psa/api",
+    "dev:api": "npm run dev -w @psa/api",
+    "build": "npm run build -w @psa/shared && npm run build -w @psa/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test -w @psa/shared && npm run test -w @psa/api",
+    "test:watch": "npm run test:watch -w @psa/api",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "node prisma/seed.mjs",
+    "db:studio": "prisma studio",
+    "db:reset": "node scripts/db-reset.mjs",
+    "db:snapshot": "node scripts/db-snapshot.mjs",
+    "lint": "npm run lint -w @psa/api --if-present",
+    "format": "prettier --write \"**/*.{ts,tsx,mjs,md,json}\" --ignore-path .gitignore"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "concurrently": "^9.1.2",
+    "prettier": "^3.6.2",
+    "prisma": "^6.19.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

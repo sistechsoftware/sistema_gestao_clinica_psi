@@ -1,0 +1,44 @@
+# =============================================================================
+# Banco de dados para desenvolvimento LOCAL (§58 — local não depende de produção)
+#
+# Subir:    npm run db:up        (docker compose up -d --wait)
+# Parar:    npm run db:down      (docker compose down — mantém dados)
+# Reset:    docker compose down -v  (APAGA dados, volumes incluídos)
+# Logs:     docker compose logs -f postgres
+#
+# Cria dois bancos na primeira inicialização do volume (docker/postgres-init/):
+#   psa_dev  — desenvolvimento (DATABASE_URL / DIRECT_URL do .env)
+#   psa_test — testes de integração (TEST_DATABASE_URL)
+#
+# O .env deve apontar para:
+#   DATABASE_URL=postgresql://psa:psa@localhost:5432/psa_dev?schema=public
+#   DIRECT_URL=postgresql://psa:psa@localhost:5432/psa_dev?schema=public
+#   TEST_DATABASE_URL=postgresql://psa:psa@localhost:5432/psa_test?schema=public
+#
+# Porta 5432 ocupada por outro Postgres? Suba em outra porta:
+#   PSA_PG_PORT=5433 npm run db:up   (e ajuste as URLs do .env)
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: psa-postgres
+    environment:
+      POSTGRES_USER: psa
+      POSTGRES_PASSWORD: psa
+      POSTGRES_DB: psa_dev
+    ports:
+      - "${PSA_PG_PORT:-5432}:5432"
+    volumes:
+      - psa_pgdata:/var/lib/postgresql/data
+      # Scripts de inicialização rodam SOMENTE na primeira criação do volume.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U psa -d psa_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  psa_pgdata:
