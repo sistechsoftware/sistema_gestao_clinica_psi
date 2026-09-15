@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & secrets — NUNCA commitar (§5)
+.env
+.env.*
+!.env.example
+
+# Prisma
+prisma/*.db
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# IDE / ferramentas locais
+.freebuff/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel
+
+# Logs
+*.log
+npm-debug.log*

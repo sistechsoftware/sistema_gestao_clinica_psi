@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "//": "Convenções de deploy — docs/03 §2–§3. main → production; develop → development; feature/* → preview.",
+  "framework": null,
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build && prisma generate && prisma migrate deploy",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    }
+  ]
+}

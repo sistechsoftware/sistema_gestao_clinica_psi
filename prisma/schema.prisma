@@ -1,0 +1,887 @@
+// ============================================================================
+// Psicanálise SaaS — Prisma Schema (Fase 0, Etapa 7/8)
+// Fonte de verdade do ERD (docs/04-erd-modelo-de-dados.md)
+//
+// Convenções:
+// - Multi-tenant: entidades de negócio com tenantId (FK nos agregados raiz,
+//   coluna escopada nos filhos). Isolamento forçado por TenantScopeExtension.
+// - Dinheiro: inteiros em centavos. Datas: timestamptz (UTC) + timezone do
+//   tenant; datas puras (nascimento, vencimento) como @db.Date.
+// - Deleção lógica (deletedAt) em entidades de negócio. AuditLog é append-only.
+// - Dados clínicos cifrados em nível de campo (AES-256-GCM) pela aplicação.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum TenantUserRole {
+  ADMIN
+  PROFESSIONAL
+  SECRETARY
+}
+
+enum PermissionEffect {
+  ALLOW
+  DENY
+}
+
+enum PatientStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum AppointmentStatus {
+  AGENDADA
+  CONFIRMADA
+  REALIZADA
+  CANCELADA
+  FALTOU
+  REAGENDADA
+}
+
+enum SessionModality {
+  ONLINE
+  IN_PERSON
+}
+
+enum PackageStatus {
+  ACTIVE
+  COMPLETED
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  PIX
+  CASH
+  CARD
+  TRANSFER
+  OTHER
+}
+
+enum ReceivableStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PayableStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum DocumentKind {
+  CONTRACT
+  PDF
+  IMAGE
+  OTHER
+}
+
+enum TemplateStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+}
+
+enum NotificationChannel {
+  PUSH
+  WHATSAPP
+  SMS
+  EMAIL
+}
+
+enum NotificationCategory {
+  SESSION_REMINDER
+  SESSION_CONFIRMATION
+  SESSION_CANCELLED
+  PAYMENT_DUE
+  PAYMENT_RECEIVED
+  ADMINISTRATIVE
+  MARKETING
+}
+
+enum QueueStatus {
+  CREATED
+  PROCESSING
+  SENT
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum PlanInterval {
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+// ============================================================================
+// NÚCLEO MULTI-TENANT / RBAC
+// ============================================================================
+
+model Tenant {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  name      String
+  slug      String    @unique
+  timezone  String    @default("America/Sao_Paulo")
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  users           TenantUser[]
+  activeSessions  Session[]           @relation("SessionActiveTenant")
+  patients        Patient[]
+  appointments    Appointment[]
+  series          AppointmentSeries[]
+  clinicalRecords ClinicalRecord[]
+  packages        Package[]
+  receivables     AccountReceivable[]
+  payables        AccountPayable[]
+  payments        Payment[]
+  documents       Document[]
+  templates       DocumentTemplate[]
+  notifications   Notification[]
+  settings        Setting[]
+  subscriptions   Subscription[]
+
+  @@index([slug])
+  @@map("tenants")
+}
+
+model User {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  name         String
+  isSuperAdmin Boolean   @default(false) @map("is_super_admin") // global, R10
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  tenantMemberships  TenantUser[]
+  sessions           Session[]
+  passwordResets     PasswordResetToken[]
+  pushSubscriptions  PushSubscription[]
+  professionalSeries AppointmentSeries[]  @relation("ProfessionalSeries")
+  auditLogs          AuditLog[]
+
+  @@index([email])
+  @@map("users")
+}
+
+model TenantUser {
+  id           String         @id @default(uuid(7)) @db.Uuid
+  tenantId     String         @db.Uuid
+  userId       String         @db.Uuid
+  role         TenantUserRole
+  extraPerms   String[]       @default([]) @map("extra_permissions")
+  revokedPerms String[]       @default([]) @map("revoked_permissions")
+  isActive     Boolean        @default(true)
+  invitedAt    DateTime?      @map("invited_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("tenant_users")
+}
+
+model Role {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  key         String   @unique // ADMIN | PROFESSIONAL | SECRETARY
+  name        String
+  description String?
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  code        String   @unique // ex.: patients:read, clinical:update
+  description String?
+  isSensitive Boolean  @default(false) @map("is_sensitive")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model Session {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  userId         String    @db.Uuid
+  activeTenantId String?   @map("active_tenant_id") @db.Uuid // tenant selecionado no login/switch
+  refreshToken   String    @unique @map("refresh_token") // armazenado como hash SHA-256
+  userAgent      String?
+  ip             String?
+  expiresAt      DateTime  @map("expires_at")
+  revokedAt      DateTime? @map("revoked_at")
+  rotatedCount   Int       @default(0) @map("rotated_count") // rotações do refresh token
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeTenant Tenant? @relation("SessionActiveTenant", fields: [activeTenantId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model Setting {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @db.Uuid
+  key       String // notifications.reminders24h, finance.defaultMethod...
+  value     Json
+  isSecret  Boolean  @default(false) @map("is_secret") // valor sensível cifrado
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@map("settings")
+}
+
+// ============================================================================
+// PACIENTES
+// ============================================================================
+
+model Patient {
+  id         String        @id @default(uuid(7)) @db.Uuid
+  tenantId   String        @db.Uuid
+  name       String
+  cpfHash    String?       @map("cpf_hash") // busca determinística
+  cpfMasked  String?       @map("cpf_masked") // ex.: ***.***.789-**
+  birthDate  DateTime?     @map("birth_date") @db.Date
+  address    Json?
+  adminNotes String?       @map("admin_notes")
+  status     PatientStatus @default(ACTIVE)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+  deletedAt  DateTime?     @map("deleted_at")
+
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  contacts        PatientContact[]
+  clinicalRecord  ClinicalRecord?
+  appointments    Appointment[]
+  series          AppointmentSeries[]
+  waitlistEntries WaitlistEntry[]
+  packages        Package[]
+  receivables     AccountReceivable[]
+  documents       Document[]
+  notifications   Notification[]
+
+  @@unique([tenantId, cpfHash])
+  @@index([tenantId, name])
+  @@index([tenantId, status])
+  @@map("patients")
+}
+
+model PatientContact {
+  id                String  @id @default(uuid(7)) @db.Uuid
+  patientId         String  @db.Uuid
+  phone             String?
+  whatsapp          String?
+  email             String?
+  emergencyName     String? @map("emergency_name")
+  emergencyPhone    String? @map("emergency_phone")
+  emergencyRelation String? @map("emergency_relation")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("patient_contacts")
+}
+
+// ============================================================================
+// CLÍNICO (segregado + cifrado)
+// ============================================================================
+
+model ClinicalRecord {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  tenantId     String    @db.Uuid
+  patientId    String    @unique @db.Uuid
+  anamnesisEnc String?   @map("anamnesis_enc") // AES-256-GCM
+  openedAt     DateTime  @default(now()) @map("opened_at")
+  closedAt     DateTime? @map("closed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  patient Patient        @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  notes   ClinicalNote[]
+
+  @@index([tenantId])
+  @@map("clinical_records")
+}
+
+model ClinicalNote {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tenantId         String    @db.Uuid
+  clinicalRecordId String    @map("clinical_record_id") @db.Uuid
+  appointmentId    String?   @db.Uuid
+  authorUserId     String    @map("author_user_id") @db.Uuid
+  contentEnc       String    @map("content_enc") // AES-256-GCM
+  noteType         String    @default("SESSION") // SESSION | EVOLUTION | PRIVATE
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  record      ClinicalRecord @relation(fields: [clinicalRecordId], references: [id], onDelete: Cascade)
+  appointment Appointment?   @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, clinicalRecordId, createdAt])
+  @@map("clinical_notes")
+}
+
+// ============================================================================
+// AGENDA / SESSÕES
+// ============================================================================
+
+model AvailabilitySlot {
+  id                 String          @id @default(uuid(7)) @db.Uuid
+  tenantId           String          @db.Uuid
+  professionalUserId String          @map("professional_user_id") @db.Uuid
+  weekday            Int // 0-6
+  startMinute        Int             @map("start_minute") // minutos desde 00:00
+  endMinute          Int             @map("end_minute")
+  modality           SessionModality
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+
+  @@unique([tenantId, professionalUserId, weekday, startMinute])
+  @@index([tenantId, professionalUserId])
+  @@map("availability_slots")
+}
+
+model AvailabilityBlock {
+  id                 String   @id @default(uuid(7)) @db.Uuid
+  tenantId           String   @db.Uuid
+  professionalUserId String   @map("professional_user_id") @db.Uuid
+  startsAt           DateTime @map("starts_at")
+  endsAt             DateTime @map("ends_at")
+  reason             String?
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, professionalUserId, startsAt])
+  @@map("availability_blocks")
+}
+
+model AppointmentSeries {
+  id                 String          @id @default(uuid(7)) @db.Uuid
+  tenantId           String          @db.Uuid
+  patientId          String          @db.Uuid
+  professionalUserId String          @map("professional_user_id") @db.Uuid
+  weekday            Int
+  startMinute        Int             @map("start_minute")
+  durationMinutes    Int             @map("duration_minutes")
+  modality           SessionModality
+  startsOn           DateTime        @map("starts_on") @db.Date
+  endsOn             DateTime?       @map("ends_on") @db.Date
+  isActive           Boolean         @default(true) @map("is_active")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  patient      Patient       @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  professional User          @relation("ProfessionalSeries", fields: [professionalUserId], references: [id], onDelete: Restrict)
+  appointments Appointment[]
+
+  @@index([tenantId, patientId])
+  @@index([tenantId, professionalUserId])
+  @@map("appointment_series")
+}
+
+model Appointment {
+  id                 String            @id @default(uuid(7)) @db.Uuid
+  tenantId           String            @db.Uuid
+  patientId          String            @db.Uuid
+  professionalUserId String            @map("professional_user_id") @db.Uuid
+  seriesId           String?           @map("series_id") @db.Uuid
+  rescheduledFromId  String?           @unique @map("rescheduled_from_id") @db.Uuid
+  startsAt           DateTime          @map("starts_at") // timestamptz
+  endsAt             DateTime          @map("ends_at")
+  durationMinutes    Int               @map("duration_minutes")
+  modality           SessionModality
+  status             AppointmentStatus @default(AGENDADA)
+  adminNotes         String?           @map("admin_notes")
+  confirmedAt        DateTime?         @map("confirmed_at")
+  canceledAt         DateTime?         @map("canceled_at")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  deletedAt          DateTime?         @map("deleted_at")
+
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  patient         Patient            @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  series          AppointmentSeries? @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  rescheduledFrom Appointment?       @relation("RescheduleChain", fields: [rescheduledFromId], references: [id], onDelete: SetNull)
+  rescheduledTo   Appointment?       @relation("RescheduleChain")
+  packageSession  PackageSession?
+  payments        Payment[]
+  clinicalNotes   ClinicalNote[]
+
+  @@unique([tenantId, professionalUserId, startsAt])
+  @@index([tenantId, startsAt])
+  @@index([tenantId, patientId, startsAt])
+  @@map("appointments")
+}
+
+model WaitlistEntry {
+  id                String          @id @default(uuid(7)) @db.Uuid
+  tenantId          String          @db.Uuid
+  patientId         String          @db.Uuid
+  preferredWeekdays Int[]           @map("preferred_weekdays")
+  preferredPeriod   String          @map("preferred_period") // MORNING | AFTERNOON | EVENING
+  modality          SessionModality
+  priority          Int             @default(0)
+  isActive          Boolean         @default(true)
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, isActive])
+  @@map("waitlist_entries")
+}
+
+// ============================================================================
+// PACOTES
+// ============================================================================
+
+model Package {
+  id            String        @id @default(uuid(7)) @db.Uuid
+  tenantId      String        @db.Uuid
+  patientId     String        @db.Uuid
+  name          String
+  sessionsCount Int           @map("sessions_count")
+  amountCents   Int           @map("amount_cents")
+  validForDays  Int?          @map("valid_for_days")
+  expiresAt     DateTime?     @map("expires_at")
+  status        PackageStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  deletedAt     DateTime?     @map("deleted_at")
+
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  patient      Patient            @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  sessions     PackageSession[]
+  receivable   AccountReceivable? @relation(fields: [receivableId], references: [id], onDelete: SetNull)
+  receivableId String?            @unique @map("receivable_id") @db.Uuid
+
+  @@index([tenantId, patientId])
+  @@map("packages")
+}
+
+model PackageSession {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  tenantId   String    @db.Uuid
+  packageId  String    @db.Uuid
+  index      Int
+  usedById   String?   @unique @map("used_by_id") @db.Uuid // Appointment que consumiu
+  usedAt     DateTime? @map("used_at")
+  canceledAt DateTime? @map("canceled_at")
+
+  package Package      @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  usedBy  Appointment? @relation(fields: [usedById], references: [id], onDelete: SetNull)
+
+  @@unique([packageId, index])
+  @@index([tenantId, packageId])
+  @@map("package_sessions")
+}
+
+// ============================================================================
+// FINANCEIRO
+// ============================================================================
+
+model AccountReceivable {
+  id          String           @id @default(uuid(7)) @db.Uuid
+  tenantId    String           @db.Uuid
+  patientId   String           @db.Uuid
+  description String
+  amountCents Int              @map("amount_cents")
+  dueDate     DateTime         @map("due_date") @db.Date
+  status      ReceivableStatus @default(PENDING)
+  notes       String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  deletedAt   DateTime?        @map("deleted_at")
+
+  tenant   Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  patient  Patient             @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  payments PaymentAllocation[]
+  package  Package?
+
+  @@index([tenantId, status, dueDate])
+  @@index([tenantId, patientId])
+  @@map("account_receivables")
+}
+
+model AccountPayable {
+  id           String        @id @default(uuid(7)) @db.Uuid
+  tenantId     String        @db.Uuid
+  supplierName String        @map("supplier_name")
+  description  String
+  category     String
+  amountCents  Int           @map("amount_cents")
+  dueDate      DateTime      @map("due_date") @db.Date
+  paidAt       DateTime?     @map("paid_at")
+  status       PayableStatus @default(PENDING)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  deletedAt    DateTime?     @map("deleted_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status, dueDate])
+  @@map("account_payables")
+}
+
+model Payment {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  tenantId       String        @db.Uuid
+  method         PaymentMethod
+  amountCents    Int           @map("amount_cents")
+  paidAt         DateTime      @map("paid_at")
+  reference      String?
+  idempotencyKey String        @unique @map("idempotency_key")
+  appointmentId  String?       @db.Uuid
+  notes          String?
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  deletedAt      DateTime?     @map("deleted_at")
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  appointment Appointment?        @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  allocations PaymentAllocation[]
+
+  @@index([tenantId, paidAt])
+  @@map("payments")
+}
+
+model PaymentAllocation {
+  id                  String @id @default(uuid(7)) @db.Uuid
+  tenantId            String @db.Uuid
+  paymentId           String @db.Uuid
+  accountReceivableId String @map("account_receivable_id") @db.Uuid
+  amountCents         Int    @map("amount_cents")
+
+  payment           Payment           @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  accountReceivable AccountReceivable @relation(fields: [accountReceivableId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, accountReceivableId])
+  @@map("payment_allocations")
+}
+
+// ============================================================================
+// DOCUMENTOS E TEMPLATES
+// ============================================================================
+
+model DocumentTemplate {
+  id        String         @id @default(uuid(7)) @db.Uuid
+  tenantId  String         @db.Uuid
+  name      String
+  body      String // template com variáveis {{patient.name}}
+  version   Int            @default(1)
+  status    TemplateStatus @default(DRAFT)
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+  deletedAt DateTime?      @map("deleted_at")
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  documents Document[]
+
+  @@index([tenantId, status])
+  @@map("document_templates")
+}
+
+model Document {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  tenantId         String       @db.Uuid
+  patientId        String?      @db.Uuid
+  templateId       String?      @db.Uuid
+  uploadedByUserId String?      @map("uploaded_by_user_id") @db.Uuid
+  name             String
+  kind             DocumentKind
+  mimeType         String       @map("mime_type")
+  sizeBytes        Int          @map("size_bytes")
+  storageKey       String       @map("storage_key") // R2 key, nunca URL pública
+  version          Int          @default(1)
+  checksum         String?
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+  deletedAt        DateTime?    @map("deleted_at")
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  patient  Patient?          @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  template DocumentTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, patientId])
+  @@map("documents")
+}
+
+// ============================================================================
+// NOTIFICAÇÕES E COMUNICAÇÃO
+// ============================================================================
+
+model Notification {
+  id        String               @id @default(uuid(7)) @db.Uuid
+  tenantId  String               @db.Uuid
+  patientId String?              @db.Uuid
+  userId    String?              @db.Uuid
+  category  NotificationCategory
+  channel   NotificationChannel
+  title     String
+  body      String // nunca conteúdo clínico
+  payload   Json?
+  createdAt DateTime             @default(now()) @map("created_at")
+
+  tenant     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient    Patient?               @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  queueItem  NotificationQueue?
+  deliveries NotificationDelivery[]
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, patientId])
+  @@map("notifications")
+}
+
+model NotificationQueue {
+  id             String      @id @default(uuid(7)) @db.Uuid
+  tenantId       String      @db.Uuid
+  notificationId String      @unique @db.Uuid
+  status         QueueStatus @default(CREATED)
+  scheduledFor   DateTime    @map("scheduled_for")
+  attempts       Int         @default(0)
+  maxAttempts    Int         @default(5) @map("max_attempts")
+  nextAttemptAt  DateTime?   @map("next_attempt_at")
+  idempotencyKey String      @unique @map("idempotency_key")
+  lastError      String?     @map("last_error")
+  processedAt    DateTime?   @map("processed_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledFor])
+  @@index([tenantId])
+  @@map("notification_queue")
+}
+
+model NotificationDelivery {
+  id             String              @id @default(uuid(7)) @db.Uuid
+  tenantId       String              @db.Uuid
+  notificationId String              @db.Uuid
+  channel        NotificationChannel
+  provider       String // "meta_whatsapp" | "resend" | "web_push"...
+  externalId     String?             @map("external_id")
+  status         QueueStatus
+  error          String?
+  attempt        Int                 @default(1)
+  sentAt         DateTime?           @map("sent_at")
+  deliveredAt    DateTime?           @map("delivered_at")
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, notificationId])
+  @@index([status])
+  @@map("notification_deliveries")
+}
+
+model NotificationPreference {
+  id        String               @id @default(uuid(7)) @db.Uuid
+  tenantId  String               @db.Uuid
+  patientId String?              @db.Uuid
+  userId    String?              @db.Uuid
+  channel   NotificationChannel
+  category  NotificationCategory
+  enabled   Boolean              @default(true)
+
+  @@unique([tenantId, patientId, userId, channel, category])
+  @@index([tenantId])
+  @@map("notification_preferences")
+}
+
+model CommunicationLog {
+  id           String              @id @default(uuid(7)) @db.Uuid
+  tenantId     String              @db.Uuid
+  patientId    String?             @db.Uuid
+  channel      NotificationChannel
+  direction    String              @default("OUTBOUND") // OUTBOUND | INBOUND
+  templateCode String?             @map("template_code")
+  bodyPreview  String              @map("body_preview")
+  status       String
+  provider     String?
+  externalId   String?             @map("external_id")
+  error        String?
+  attempts     Int                 @default(1)
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  @@index([tenantId, patientId, createdAt])
+  @@map("communication_logs")
+}
+
+model PushSubscription {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  tenantId  String    @db.Uuid
+  userId    String    @db.Uuid
+  endpoint  String    @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@map("push_subscriptions")
+}
+
+// ============================================================================
+// SaaS / PLATAFORMA
+// ============================================================================
+
+model Plan {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  key          String   @unique // FREE | BASIC | PROFESSIONAL | BUSINESS | ENTERPRISE
+  name         String
+  monthlyCents Int?     @map("monthly_cents")
+  yearlyCents  Int?     @map("yearly_cents")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  features      PlanFeature[]
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model PlanFeature {
+  id         String @id @default(uuid(7)) @db.Uuid
+  planId     String @db.Uuid
+  feature    String // max_patients, max_users, storage_mb, whatsapp...
+  limitValue Int?   @map("limit_value")
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, feature])
+  @@map("plan_features")
+}
+
+model Subscription {
+  id               String             @id @default(uuid(7)) @db.Uuid
+  tenantId         String             @db.Uuid
+  planId           String             @db.Uuid
+  status           SubscriptionStatus @default(TRIALING)
+  currentPeriodEnd DateTime           @map("current_period_end")
+  canceledAt       DateTime?          @map("canceled_at")
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, status])
+  @@map("subscriptions")
+}
+
+model UsageMetric {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @db.Uuid
+  metric    String // patients_active, appointments_created...
+  period    String   @map("period") // "2026-09"
+  value     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([tenantId, metric, period])
+  @@index([tenantId, period])
+  @@map("usage_metrics")
+}
+
+// ============================================================================
+// AUDITORIA
+// ============================================================================
+
+model AuditLog {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String?  @db.Uuid // null = ação de plataforma (super admin)
+  userId    String?  @db.Uuid
+  action    String // auth.login, patient.create, clinical.note.read...
+  entity    String?
+  entityId  String?  @map("entity_id")
+  ip        String?
+  userAgent String?  @map("user_agent")
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([userId, createdAt])
+  @@index([action])
+  @@map("audit_logs")
+}
