@@ -114,14 +114,20 @@ jobs:
 
       # Falha se existir mudança no schema sem migration correspondente —
       # impede drift entre schema.prisma e migrations/ (doc 04 §5).
-      # Nota: diff vazio emite só o comentário "-- This is an empty migration.",
+      # Nota 1: o migrate diff usa o shadow db como rascunho e o DEIXA POPULADO;
+      # por isso o shadow é um banco separado (psa_shadow) e NÃO o psa_ci do
+      # migrate deploy — deployment em alvo sujo dá P3005.
+      # Nota 2: diff vazio emite só o comentário "-- This is an empty migration.",
       # então consideramos drift apenas quando há linha de DDL de verdade.
+      - name: Create scratch database for migrate diff
+        run: PGPASSWORD=psa psql -h localhost -U psa -d psa_ci -c 'CREATE DATABASE psa_shadow'
+
       - name: Detect missing migration (schema drift)
         run: |
           npx prisma migrate diff \
             --from-migrations prisma/migrations \
             --to-schema-datamodel prisma/schema.prisma \
-            --shadow-database-url "$DIRECT_URL" \
+            --shadow-database-url "postgresql://psa:psa@localhost:5432/psa_shadow?schema=public" \
             --script > /tmp/drift.sql || { echo "::error::migrate diff falhou"; cat /tmp/drift.sql; exit 1; }
           if grep -qEv '^\s*(--.*)?$' /tmp/drift.sql; then
             echo "::error::schema.prisma divergiu de prisma/migrations — rode 'npm run db:migrate' e commite a nova migration."
